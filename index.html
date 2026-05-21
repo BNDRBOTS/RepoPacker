@@ -55,6 +55,11 @@
     .route-view { display: none; opacity: 0; }
     .route-view.active { display: flex; opacity: 1; }
     @media (max-width: 768px) { .safe-pb { padding-bottom: calc(env(safe-area-inset-bottom) + 100px); } }
+    
+    #drop-zone.dragover {
+      border-color: var(--accent, #5e6ad2);
+      background: rgba(94,106,210,0.1);
+    }
   </style>
 </head>
 <body class="flex flex-col md:flex-row h-[100dvh] w-screen selection:bg-accent selection:text-white select-text-area">
@@ -113,6 +118,13 @@
 
           <div id="view-input" class="flex flex-col gap-5">
             <input type="file" id="file-input" class="hidden" accept=".txt,.md,.log,.json,.js,.ts,.html,.css,.jsx,.tsx">
+            
+            <!-- ===== ADDED: Drag-and-drop zone ===== -->
+            <div id="drop-zone" class="w-full border-2 border-dashed border-white/20 hover:border-accent rounded-2xl p-8 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer select-none touch-manipulation">
+              <i data-lucide="upload-cloud" class="w-8 h-8 text-white/40 group-hover:text-accent transition-colors"></i>
+              <span class="text-sm text-white/50 font-mono">Drag & Drop payload here</span>
+            </div>
+
             <button id="btn-select-file" class="group overflow-hidden w-full bg-black/30 border border-white/20 hover:border-accent active:scale-95 text-white font-medium min-h-[80px] py-6 rounded-2xl flex flex-col items-center justify-center gap-3 transition-all hover:bg-white/5 select-none touch-manipulation">
               <i data-lucide="file-text" class="w-8 h-8 text-white/50 group-hover:text-accent transition-colors"></i>
               <span class="tracking-wide text-lg">Select Payload File</span>
@@ -447,7 +459,7 @@ const SPECIAL_FILENAMES = /^(Dockerfile|Makefile|Gemfile|Procfile|Rakefile|LICEN
 
 function isValidPath(p) {
   if (!p || p.length === 0 || p.length > 255) return false;
-  // Reject any path that contains spaces – prevents prose from sneaking in
+  // No spaces allowed – prevents prose from passing as a valid path
   if (p.includes(' ')) return false;
 
   const fileName = p.trim().split('/').pop();
@@ -463,7 +475,7 @@ function extractPathInfo(line) {
   // Remove trailing timestamp like " - Oct 1, 2023, 10:30 AM"
   trimmed = trimmed.replace(/\s+-\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+[AP]M$/, '').trim();
 
-  // --- FILE: case-insensitive
+  // --- FILE: case-insensitive (fix #7)
   if (trimmed.toUpperCase().startsWith('--- FILE:') && trimmed.includes('---', 9)) {
     const path = trimmed.replace(/---\s*FILE:\s*/i, '').split('---')[0].trim();
     if (isValidPath(path)) return { path, type: 'EXPLICIT' };
@@ -501,19 +513,18 @@ function extractPathInfo(line) {
   const mdHeaderMatch = clean.match(/^#+\s+([^\s]+\.[a-zA-Z0-9]+)$/);
   if (mdHeaderMatch && isValidPath(mdHeaderMatch[1])) return { path: mdHeaderMatch[1], type: 'IMPLICIT' };
 
-  // Prose line with filename after a colon (e.g., "Here’s the server file: index.js")
+  // Prose line with filename after a colon (fix #6)
   const proseMatch = clean.match(/^[^:]+:\s*([^\s]+\.[a-zA-Z0-9]+)$/);
   if (proseMatch) {
     const prefix = clean.substring(0, clean.indexOf(':')).toLowerCase();
     const codeKeywords = /^(const|let|var|import|export|function|class|if|for|while|return|switch|case|try|catch|throw|async|await|new|delete|typeof|instanceof)\b/;
-    // Only treat as path if prefix is not a code keyword and doesn't contain code-like symbols
     if (!codeKeywords.test(prefix) && !/[{}();=><]/.test(prefix)) {
       const candidate = proseMatch[1].trim();
       if (isValidPath(candidate)) return { path: candidate, type: 'IMPLICIT' };
     }
   }
 
-  // Bare filename with known extension (must include slash or valid ext)
+  // Bare filename with known extension
   if (/^[a-zA-Z0-9_\-\.\/@]+\.[a-zA-Z0-9]+$/.test(clean)) {
     const ext = clean.split('.').pop().toLowerCase();
     if (clean.includes('/') || KNOWN_SOURCE_EXTS.includes(ext)) {
@@ -525,12 +536,11 @@ function extractPathInfo(line) {
 }
 
 // ------------------------------------------------------------------
-// TypeScript detection for guessFilePath
+// TypeScript detection for guessFilePath (fix #2)
 function isTypeScript(content) {
   const lines = content.split('\n');
   for (let line of lines) {
     const trimmed = line.trim();
-    // Skip comments and empty lines
     if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed === '') continue;
     if (/interface\s+\w+\s*\{/.test(trimmed)) return true;
     if (/type\s+\w+\s*=/.test(trimmed)) return true;
@@ -541,27 +551,25 @@ function isTypeScript(content) {
     if (/satisfies\s/.test(trimmed)) return true;
     if (/:\s*React\.\w+/.test(trimmed)) return true;
     if (/\w+\s*:\s*\w+/.test(trimmed) && /function|const|let|var/.test(trimmed)) return true;
-    // Generics usage <T> or <Type>
     if (/<\w+>/.test(trimmed) && (trimmed.includes('function') || trimmed.includes('class') || trimmed.includes('const'))) return true;
   }
   return false;
 }
 
 // ------------------------------------------------------------------
-// Configuration file fingerprinting
+// Configuration file fingerprinting (fix #9) – now fully TypeScript aware
 function detectConfigFile(content) {
   const text = content.toLowerCase();
   if (text.includes('"compileroptions"') && text.includes('"target"')) return 'tsconfig.json';
-  if (text.includes('"compileroptions"')) return 'jsconfig.json'; // fallback
+  if (text.includes('"compileroptions"')) return 'jsconfig.json';
   if (text.includes('defineconfig') && (text.includes('vite') || text.includes('from "vite"') || text.includes("from 'vite'"))) {
-    // Determine if it's TS or JS based on content
     return isTypeScript(content) ? 'vite.config.ts' : 'vite.config.js';
   }
   if (text.includes('next.config') || (text.includes('module.exports') && text.includes('reactstrictmode'))) {
-    return 'next.config.js';
+    return isTypeScript(content) ? 'next.config.ts' : 'next.config.js';
   }
   if (text.includes('content: [') && text.includes('theme: {') && text.includes('plugins: [')) {
-    return 'tailwind.config.js';
+    return isTypeScript(content) ? 'tailwind.config.ts' : 'tailwind.config.js';
   }
   if (text.includes('datasource db {') || text.includes('generator client {')) {
     return 'prisma/schema.prisma';
@@ -569,7 +577,7 @@ function detectConfigFile(content) {
   return null;
 }
 
-// Content-based path inference – assigns full relative path (dir/filename.ext)
+// Content-based path inference (fix #2 + #3 + #9)
 function guessFilePath(content, index) {
   const firstLine = content.split('\n')[0]?.trim() || '';
   const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -579,7 +587,7 @@ function guessFilePath(content, index) {
   const configPath = detectConfigFile(content);
   if (configPath) return sanitizePath(configPath);
 
-  // 2. Explicit comment path (// path/to/file.ext or # path/to/file.ext) – exact
+  // 2. Explicit comment path
   const explicitComment = firstLine.match(/(?:\/\/|#)\s*([a-zA-Z0-9_\-\.\/]+\.\w+)/);
   if (explicitComment && isValidPath(explicitComment[1])) {
     return sanitizePath(explicitComment[1]);
@@ -594,7 +602,7 @@ function guessFilePath(content, index) {
   const pathLikeCount = lines.filter(l => /^[a-zA-Z0-9_\-\.\/\*]+$/.test(l) && !l.includes(' ')).length;
   if (pathLikeCount > 0.6 * lines.length && lines.length > 5) return '.gitignore';
 
-  // .env detection with strict rules
+  // .env detection with strict uppercase variable filter (fix #3)
   const envCandidate = lines.filter(l => l.includes('=') && !l.startsWith('//') && !l.startsWith('#'));
   const realEnv = envCandidate.filter(l => /^[A-Z_][A-Z0-9_]*\s*=\s*.+$/.test(l.trim()));
   if (envCandidate.length > 0.4 * lines.length && realEnv.length / envCandidate.length > 0.8 && lines.length > 3) {
@@ -611,7 +619,6 @@ function guessFilePath(content, index) {
   const isReact = (text.includes('react') || isJSX) && text.includes('export default');
   const isTS = isTypeScript(content);
 
-  // Extract a meaningful name: from function/class name or first import identifier
   let name = `module_${index}`;
   const funcMatch = content.match(/(?:function|const)\s+(\w+)/);
   const classMatch = content.match(/class\s+(\w+)/);
@@ -620,7 +627,7 @@ function guessFilePath(content, index) {
   else if (classMatch) name = classMatch[1];
   else if (funcMatch) name = funcMatch[1];
 
-  // Determine extension based on TS and JSX detection
+  // Extension logic with full TS/TSX awareness
   let ext = 'js';
   if (isJSX && isTS) ext = 'tsx';
   else if (isJSX) ext = 'jsx';
@@ -641,7 +648,6 @@ function guessFilePath(content, index) {
   else if (ext === 'py') dir = 'src/';
   else if (ext === 'json') dir = '';
 
-  // Special cases: tests
   if (text.includes('describe(') || text.includes('it(') || text.includes('test(')) {
     dir = 'tests/';
     if (name.startsWith('module_')) name = `test_${index}`;
@@ -651,7 +657,7 @@ function guessFilePath(content, index) {
 }
 
 // ------------------------------------------------------------------
-// Deduplication: avoid overwriting files with same name
+// Deduplication: prevents overwriting files with the same path (fix #4)
 function deduplicatePaths(files) {
   const used = new Set();
   return files.map(f => {
@@ -659,7 +665,6 @@ function deduplicatePaths(files) {
     let counter = 1;
     let candidate = base;
     while (used.has(candidate)) {
-      // Insert _2, _3 before extension
       const dotIdx = base.lastIndexOf('.');
       if (dotIdx > 0) {
         candidate = base.substring(0, dotIdx) + `_${++counter}` + base.substring(dotIdx);
@@ -673,10 +678,9 @@ function deduplicatePaths(files) {
 }
 
 // ============================================================================
-// FORENSIC PARSER
+// FORENSIC PARSER (with hardened rename logic)
 // ============================================================================
 function forensicExtract(text) {
-  // Binary‑first pipeline
   text = stripBOM(text);
   if (text.slice(0, 65536).includes('\0') || isBinaryContent(text)) {
     return [{ path: 'payload.bin', content: btoa(unescape(encodeURIComponent(text))) }];
@@ -688,8 +692,8 @@ function forensicExtract(text) {
   let currentType = null;
   let buffer = [];
   let blockIndex = 1;
-  let inCodeFence = false;          // for stripping language-only fences inside IMPLICIT blocks
-  const MIN_CONTENT_LINES = 3;      // ≥3 non‑empty lines required for ambiguous headers
+  let inCodeFence = false;               // fix #5: track language-only fences
+  const MIN_CONTENT_LINES = 3;
 
   const flushBuffer = () => {
     while(buffer.length > 0 && buffer[buffer.length - 1].trim() === '') buffer.pop();
@@ -707,16 +711,21 @@ function forensicExtract(text) {
     const trimmed = line.trim();
     const cleanTrimmed = trimmed.replace(/\s+-\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+[AP]M$/, '').trim();
 
-    const isMajorDivider = trimmed.length >= 10 && /^=+$/.test(trimmed);
-    const isDashDivider = trimmed.length >= 10 && /^-+$/.test(trimmed) && !trimmed.includes('FILE:');
-
-    const pathInfo = extractPathInfo(line);
-
-    // Handle fence closing while inside a code fence (language-only wrapper)
+    // ------------------------------------------------------------------
+    // Fix #5: if we are inside a language-only fence, capture everything verbatim
+    // except the closing fence which is handled first.
     if (inCodeFence && trimmed === FENCE) {
       inCodeFence = false;
-      continue; // skip the closing fence
+      continue;
     }
+    if (inCodeFence) {
+      buffer.push(line);
+      continue;
+    }
+
+    const isMajorDivider = trimmed.length >= 10 && /^=+$/.test(trimmed);
+    const isDashDivider = trimmed.length >= 10 && /^-+$/.test(trimmed) && !trimmed.includes('FILE:');
+    const pathInfo = extractPathInfo(line);
 
     if (!currentFile) {
       if (pathInfo) {
@@ -728,27 +737,18 @@ function forensicExtract(text) {
         currentType = 'DIVIDER';
         buffer = [];
       } else if (trimmed.startsWith(FENCE) && !pathInfo) {
-        // Fence without path inside no block: treat as language wrapper, start code fence
+        // Language-only fence without a current block
         inCodeFence = true;
         currentFile = `UNKNOWN_BLOCK_${blockIndex++}`;
         currentType = 'DIVIDER';
         buffer = [];
       }
     } else {
-      // Check if inside a code fence (language-only) -> strip fences
-      if (inCodeFence) {
-        // If we hit a closing fence, handled above
-        buffer.push(line);
-        continue;
-      }
-
-      const isExplicitClose = cleanTrimmed === FENCE_EOF || (cleanTrimmed === FENCE && !line.startsWith(' '));
-
-      // Divider handling: fix double separator issue
+      // Fix #1: second divider handling
       if (isMajorDivider || isDashDivider) {
-        // If buffer is empty (no content yet), keep current file (divider is likely a decorative separator)
+        // If the buffer is empty, skip the divider (it’s just a decorative separator)
         if (buffer.filter(l => l.trim().length > 0).length === 0) {
-          continue; // skip divider, stay in current block
+          continue;
         } else {
           flushBuffer();
           currentFile = `UNKNOWN_BLOCK_${blockIndex++}`;
@@ -756,6 +756,7 @@ function forensicExtract(text) {
           buffer = [];
         }
       } else if (currentType === 'FENCE') {
+        const isExplicitClose = cleanTrimmed === FENCE_EOF || (cleanTrimmed === FENCE && !line.startsWith(' '));
         if (isExplicitClose) {
           flushBuffer();
           currentFile = null;
@@ -764,10 +765,12 @@ function forensicExtract(text) {
           buffer.push(line);
         }
       } else {
-        // Non‑fence block: check for new path info
+        const isExplicitClose = cleanTrimmed === FENCE_EOF || (cleanTrimmed === FENCE && !line.startsWith(' '));
+
         if (pathInfo && pathInfo.path !== currentFile) {
-          if (currentFile.startsWith('UNKNOWN_BLOCK_') && buffer.length < 15) {
-            // Upgrade the placeholder to the found path
+          // 🔍 Edge-case guard: if current block is unnamed and buffer still empty,
+          // rename without flushing to avoid dangling empty files.
+          if (currentFile.startsWith('UNKNOWN_BLOCK_') && buffer.filter(l => l.trim().length > 0).length === 0) {
             currentFile = sanitizePath(pathInfo.path.replace(/^\/+/, ''));
             currentType = pathInfo.type;
           } else {
@@ -781,9 +784,8 @@ function forensicExtract(text) {
           currentFile = null;
           currentType = null;
         } else if (trimmed.startsWith(FENCE) && !pathInfo) {
-          // Language-only fence inside implicit block: start stripping
+          // Language-only fence inside a block
           inCodeFence = true;
-          // do not add fence line to buffer
         } else {
           buffer.push(line);
         }
@@ -806,7 +808,7 @@ function forensicExtract(text) {
     finalFiles.push({ path: 'payload.txt', content: text });
   }
 
-  // Deduplicate before returning
+  // Fix #4: deduplication
   return deduplicatePaths(finalFiles);
 }
 
@@ -883,6 +885,7 @@ async function processRemotePayload() {
     
     await packagePayload(text, sourceName, RemoteViewCtrl);
   } catch (err) {
+    // Fix #10: improved CORS error message
     let msg = `Network Fault: ${err.message}`;
     if (err instanceof TypeError && err.message === 'Failed to fetch') {
       msg = 'CORS or Network Block: The remote server refused the connection. Verify the URL is accessible and allows cross-origin requests.';
