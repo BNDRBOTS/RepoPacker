@@ -447,7 +447,8 @@ const SPECIAL_FILENAMES = /^(Dockerfile|Makefile|Gemfile|Procfile|Rakefile|LICEN
 
 function isValidPath(p) {
   if (!p || p.length === 0 || p.length > 255) return false;
-  if (p.includes(' ') && p.split(' ').length > 2) return false;
+  // Reject any path that contains spaces – prevents prose from sneaking in
+  if (p.includes(' ')) return false;
 
   const fileName = p.trim().split('/').pop();
   const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
@@ -459,13 +460,16 @@ function isValidPath(p) {
 // Advanced Multi-Format Path Extraction
 function extractPathInfo(line) {
   let trimmed = line.trim();
+  // Remove trailing timestamp like " - Oct 1, 2023, 10:30 AM"
   trimmed = trimmed.replace(/\s+-\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+[AP]M$/, '').trim();
 
-  if (trimmed.startsWith('--- FILE:') && trimmed.includes('---', 9)) {
-    const path = trimmed.replace('--- FILE:', '').split('---')[0].trim();
+  // --- FILE: case-insensitive
+  if (trimmed.toUpperCase().startsWith('--- FILE:') && trimmed.includes('---', 9)) {
+    const path = trimmed.replace(/---\s*FILE:\s*/i, '').split('---')[0].trim();
     if (isValidPath(path)) return { path, type: 'EXPLICIT' };
   }
 
+  // Fence line detection
   if (trimmed.startsWith(FENCE) && trimmed !== FENCE && trimmed !== FENCE_EOF) {
     const meta = trimmed.substring(FENCE.length).trim();
     if (meta) {
@@ -485,15 +489,31 @@ function extractPathInfo(line) {
 
   const clean = trimmed.replace(/^[\*\`]+|[\*\`]+$/g, '').trim(); 
 
+  // Explicit "File: path" etc.
   const explicitMatch = clean.match(/^(?:File|Filename|Path|Title):\s*([^\s]+\.[a-zA-Z0-9]+)$/i);
   if (explicitMatch && isValidPath(explicitMatch[1])) return { path: explicitMatch[1], type: 'IMPLICIT' };
 
+  // Comments with paths
   const commentMatch = clean.match(/^(?:\/\*|\/\/|#|<!--)\s*([^\s]+\.[a-zA-Z0-9]+)\s*(?:\*\/|-->)?$/);
   if (commentMatch && isValidPath(commentMatch[1])) return { path: commentMatch[1], type: 'IMPLICIT' };
 
+  // Markdown headers with paths
   const mdHeaderMatch = clean.match(/^#+\s+([^\s]+\.[a-zA-Z0-9]+)$/);
   if (mdHeaderMatch && isValidPath(mdHeaderMatch[1])) return { path: mdHeaderMatch[1], type: 'IMPLICIT' };
 
+  // Prose line with filename after a colon (e.g., "Here’s the server file: index.js")
+  const proseMatch = clean.match(/^[^:]+:\s*([^\s]+\.[a-zA-Z0-9]+)$/);
+  if (proseMatch) {
+    const prefix = clean.substring(0, clean.indexOf(':')).toLowerCase();
+    const codeKeywords = /^(const|let|var|import|export|function|class|if|for|while|return|switch|case|try|catch|throw|async|await|new|delete|typeof|instanceof)\b/;
+    // Only treat as path if prefix is not a code keyword and doesn't contain code-like symbols
+    if (!codeKeywords.test(prefix) && !/[{}();=><]/.test(prefix)) {
+      const candidate = proseMatch[1].trim();
+      if (isValidPath(candidate)) return { path: candidate, type: 'IMPLICIT' };
+    }
+  }
+
+  // Bare filename with known extension (must include slash or valid ext)
   if (/^[a-zA-Z0-9_\-\.\/@]+\.[a-zA-Z0-9]+$/.test(clean)) {
     const ext = clean.split('.').pop().toLowerCase();
     if (clean.includes('/') || KNOWN_SOURCE_EXTS.includes(ext)) {
@@ -504,42 +524,92 @@ function extractPathInfo(line) {
   return null;
 }
 
+// ------------------------------------------------------------------
+// TypeScript detection for guessFilePath
+function isTypeScript(content) {
+  const lines = content.split('\n');
+  for (let line of lines) {
+    const trimmed = line.trim();
+    // Skip comments and empty lines
+    if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed === '') continue;
+    if (/interface\s+\w+\s*\{/.test(trimmed)) return true;
+    if (/type\s+\w+\s*=/.test(trimmed)) return true;
+    if (/:\s*(string|number|boolean|any|void|never|unknown|symbol|bigint|Date|RegExp|Promise|Array|Map|Set|React\.\w+|JSX\.\w+)\b/.test(trimmed)) return true;
+    if (/as\s+\w+/.test(trimmed)) return true;
+    if (/import\s+type\s/.test(trimmed)) return true;
+    if (/export\s+type\s/.test(trimmed)) return true;
+    if (/satisfies\s/.test(trimmed)) return true;
+    if (/:\s*React\.\w+/.test(trimmed)) return true;
+    if (/\w+\s*:\s*\w+/.test(trimmed) && /function|const|let|var/.test(trimmed)) return true;
+    // Generics usage <T> or <Type>
+    if (/<\w+>/.test(trimmed) && (trimmed.includes('function') || trimmed.includes('class') || trimmed.includes('const'))) return true;
+  }
+  return false;
+}
+
+// ------------------------------------------------------------------
+// Configuration file fingerprinting
+function detectConfigFile(content) {
+  const text = content.toLowerCase();
+  if (text.includes('"compileroptions"') && text.includes('"target"')) return 'tsconfig.json';
+  if (text.includes('"compileroptions"')) return 'jsconfig.json'; // fallback
+  if (text.includes('defineconfig') && (text.includes('vite') || text.includes('from "vite"') || text.includes("from 'vite'"))) {
+    // Determine if it's TS or JS based on content
+    return isTypeScript(content) ? 'vite.config.ts' : 'vite.config.js';
+  }
+  if (text.includes('next.config') || (text.includes('module.exports') && text.includes('reactstrictmode'))) {
+    return 'next.config.js';
+  }
+  if (text.includes('content: [') && text.includes('theme: {') && text.includes('plugins: [')) {
+    return 'tailwind.config.js';
+  }
+  if (text.includes('datasource db {') || text.includes('generator client {')) {
+    return 'prisma/schema.prisma';
+  }
+  return null;
+}
+
 // Content-based path inference – assigns full relative path (dir/filename.ext)
 function guessFilePath(content, index) {
-  const text = content.toLowerCase();
   const firstLine = content.split('\n')[0]?.trim() || '';
   const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const text = content.toLowerCase();
 
-  // 1. Explicit comment path (// path/to/file.ext or # path/to/file.ext) – exact
+  // 1. Config file detection (exact matches)
+  const configPath = detectConfigFile(content);
+  if (configPath) return sanitizePath(configPath);
+
+  // 2. Explicit comment path (// path/to/file.ext or # path/to/file.ext) – exact
   const explicitComment = firstLine.match(/(?:\/\/|#)\s*([a-zA-Z0-9_\-\.\/]+\.\w+)/);
   if (explicitComment && isValidPath(explicitComment[1])) {
     return sanitizePath(explicitComment[1]);
   }
 
-  // 2. Core file types with fixed locations
+  // 3. Core file types with fixed locations
   if (text.includes('<!doctype html>') || text.includes('<html')) return 'public/index.html';
   if (text.includes('"name":') && text.includes('"version":') && text.includes('"dependencies":')) return 'package.json';
-  if (text.includes('railway.schema.json') || (text.includes('"build":') && text.includes('"deploy":'))) {
-    try { JSON.parse(content.trim()); return 'railway.json'; } catch(e) {}
-  }
   if (text.includes('getting started') || (firstLine.startsWith('# ') && lines.length < 30)) return 'README.md';
 
+  // .gitignore heuristic
   const pathLikeCount = lines.filter(l => /^[a-zA-Z0-9_\-\.\/\*]+$/.test(l) && !l.includes(' ')).length;
   if (pathLikeCount > 0.6 * lines.length && lines.length > 5) return '.gitignore';
 
-  const envLineCount = lines.filter(l => l.includes('=') && !l.startsWith('//') && !l.startsWith('#')).length;
-  if (envLineCount > 0.4 * lines.length && lines.length > 3) {
+  // .env detection with strict rules
+  const envCandidate = lines.filter(l => l.includes('=') && !l.startsWith('//') && !l.startsWith('#'));
+  const realEnv = envCandidate.filter(l => /^[A-Z_][A-Z0-9_]*\s*=\s*.+$/.test(l.trim()));
+  if (envCandidate.length > 0.4 * lines.length && realEnv.length / envCandidate.length > 0.8 && lines.length > 3) {
     const isExample = text.includes('your_') || text.includes('example') || text.includes('placeholder');
     return isExample ? '.env.example' : '.env';
   }
 
   if (/^(Dockerfile|Makefile|Procfile)$/i.test(firstLine)) return firstLine;
 
-  // 3. Heuristic directory structure based on content
+  // 4. Heuristic directory structure based on content
   const isJS = text.includes('require(') || text.includes('import ') || text.includes('function ') || text.includes('const ');
   const isJSX = text.includes('jsx') || text.includes('<component') || (text.includes('<') && text.includes('>') && text.includes('export default'));
   const isExpress = text.includes('express') && (text.includes('app.listen') || text.includes('app.get'));
   const isReact = (text.includes('react') || isJSX) && text.includes('export default');
+  const isTS = isTypeScript(content);
 
   // Extract a meaningful name: from function/class name or first import identifier
   let name = `module_${index}`;
@@ -550,13 +620,12 @@ function guessFilePath(content, index) {
   else if (classMatch) name = classMatch[1];
   else if (funcMatch) name = funcMatch[1];
 
-  // Determine extension and directory
+  // Determine extension based on TS and JSX detection
   let ext = 'js';
-  if (isJSX) ext = 'jsx';
-  else if (text.includes('import ') && text.includes('from') && text.includes('css')) ext = 'css';
-  else if (text.includes('from') && text.includes('.css')) ext = 'js';
+  if (isJSX && isTS) ext = 'tsx';
+  else if (isJSX) ext = 'jsx';
+  else if (isTS) ext = 'ts';
   else if (text.includes('font-family') || text.includes('margin:')) ext = 'css';
-  else if (text.includes('import react') || text.includes('from "react"')) ext = 'jsx';
   else if (text.startsWith('{') && text.endsWith('}')) { try { JSON.parse(content.trim()); ext = 'json'; } catch(e) {} }
   else if (text.includes('def ') && text.includes('import ')) ext = 'py';
 
@@ -576,12 +645,36 @@ function guessFilePath(content, index) {
   if (text.includes('describe(') || text.includes('it(') || text.includes('test(')) {
     dir = 'tests/';
     if (name.startsWith('module_')) name = `test_${index}`;
-    ext = isJSX ? 'jsx' : 'js';
   }
 
   return sanitizePath(`${dir}${name}.${ext}`);
 }
 
+// ------------------------------------------------------------------
+// Deduplication: avoid overwriting files with same name
+function deduplicatePaths(files) {
+  const used = new Set();
+  return files.map(f => {
+    let base = f.path;
+    let counter = 1;
+    let candidate = base;
+    while (used.has(candidate)) {
+      // Insert _2, _3 before extension
+      const dotIdx = base.lastIndexOf('.');
+      if (dotIdx > 0) {
+        candidate = base.substring(0, dotIdx) + `_${++counter}` + base.substring(dotIdx);
+      } else {
+        candidate = base + `_${++counter}`;
+      }
+    }
+    used.add(candidate);
+    return { ...f, path: candidate };
+  });
+}
+
+// ============================================================================
+// FORENSIC PARSER
+// ============================================================================
 function forensicExtract(text) {
   // Binary‑first pipeline
   text = stripBOM(text);
@@ -595,13 +688,13 @@ function forensicExtract(text) {
   let currentType = null;
   let buffer = [];
   let blockIndex = 1;
-  const MIN_CONTENT_LINES = 3;  // ≥3 non‑empty lines required for ambiguous headers
+  let inCodeFence = false;          // for stripping language-only fences inside IMPLICIT blocks
+  const MIN_CONTENT_LINES = 3;      // ≥3 non‑empty lines required for ambiguous headers
 
   const flushBuffer = () => {
     while(buffer.length > 0 && buffer[buffer.length - 1].trim() === '') buffer.pop();
     while(buffer.length > 0 && buffer[0].trim() === '') buffer.shift();
     if (buffer.length > 0) {
-      // Apply phantom‑file prevention for non‑explicit headers
       const realLines = buffer.filter(l => l.trim().length > 0).length;
       if (currentType === 'EXPLICIT' || currentType === 'FENCE' || realLines >= MIN_CONTENT_LINES) {
         files.push({ path: sanitizePath(currentFile), content: buffer.join('\n') });
@@ -619,6 +712,12 @@ function forensicExtract(text) {
 
     const pathInfo = extractPathInfo(line);
 
+    // Handle fence closing while inside a code fence (language-only wrapper)
+    if (inCodeFence && trimmed === FENCE) {
+      inCodeFence = false;
+      continue; // skip the closing fence
+    }
+
     if (!currentFile) {
       if (pathInfo) {
         currentFile = sanitizePath(pathInfo.path.replace(/^\/+/, ''));
@@ -628,15 +727,34 @@ function forensicExtract(text) {
         currentFile = `UNKNOWN_BLOCK_${blockIndex++}`;
         currentType = 'DIVIDER';
         buffer = [];
-      }
-    } else {
-      const isExplicitClose = cleanTrimmed === FENCE_EOF || (cleanTrimmed === FENCE && !line.startsWith(' '));
-
-      if (isMajorDivider || isDashDivider) {
-        flushBuffer();
+      } else if (trimmed.startsWith(FENCE) && !pathInfo) {
+        // Fence without path inside no block: treat as language wrapper, start code fence
+        inCodeFence = true;
         currentFile = `UNKNOWN_BLOCK_${blockIndex++}`;
         currentType = 'DIVIDER';
         buffer = [];
+      }
+    } else {
+      // Check if inside a code fence (language-only) -> strip fences
+      if (inCodeFence) {
+        // If we hit a closing fence, handled above
+        buffer.push(line);
+        continue;
+      }
+
+      const isExplicitClose = cleanTrimmed === FENCE_EOF || (cleanTrimmed === FENCE && !line.startsWith(' '));
+
+      // Divider handling: fix double separator issue
+      if (isMajorDivider || isDashDivider) {
+        // If buffer is empty (no content yet), keep current file (divider is likely a decorative separator)
+        if (buffer.filter(l => l.trim().length > 0).length === 0) {
+          continue; // skip divider, stay in current block
+        } else {
+          flushBuffer();
+          currentFile = `UNKNOWN_BLOCK_${blockIndex++}`;
+          currentType = 'DIVIDER';
+          buffer = [];
+        }
       } else if (currentType === 'FENCE') {
         if (isExplicitClose) {
           flushBuffer();
@@ -646,9 +764,10 @@ function forensicExtract(text) {
           buffer.push(line);
         }
       } else {
+        // Non‑fence block: check for new path info
         if (pathInfo && pathInfo.path !== currentFile) {
-          // If we're inside a divider block and the new path is a better match, rename it
           if (currentFile.startsWith('UNKNOWN_BLOCK_') && buffer.length < 15) {
+            // Upgrade the placeholder to the found path
             currentFile = sanitizePath(pathInfo.path.replace(/^\/+/, ''));
             currentType = pathInfo.type;
           } else {
@@ -661,6 +780,10 @@ function forensicExtract(text) {
           flushBuffer();
           currentFile = null;
           currentType = null;
+        } else if (trimmed.startsWith(FENCE) && !pathInfo) {
+          // Language-only fence inside implicit block: start stripping
+          inCodeFence = true;
+          // do not add fence line to buffer
         } else {
           buffer.push(line);
         }
@@ -683,7 +806,8 @@ function forensicExtract(text) {
     finalFiles.push({ path: 'payload.txt', content: text });
   }
 
-  return finalFiles;
+  // Deduplicate before returning
+  return deduplicatePaths(finalFiles);
 }
 
 async function packagePayload(text, sourceName, viewCtrl) {
@@ -759,7 +883,11 @@ async function processRemotePayload() {
     
     await packagePayload(text, sourceName, RemoteViewCtrl);
   } catch (err) {
-    RemoteViewCtrl.showError(`Network Fault: ${err.message}`);
+    let msg = `Network Fault: ${err.message}`;
+    if (err instanceof TypeError && err.message === 'Failed to fetch') {
+      msg = 'CORS or Network Block: The remote server refused the connection. Verify the URL is accessible and allows cross-origin requests.';
+    }
+    RemoteViewCtrl.showError(msg);
   }
 }
 
