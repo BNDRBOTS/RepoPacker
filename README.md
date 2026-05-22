@@ -35,3 +35,5 @@ A single‑file HTML tool that converts any text‑based payload (`.txt`, `.md`,
 
 ## License
 Provided as‑is for personal and commercial use.
+
+### PLEASE NOTE: ALL those claims were made by AI, I'm not claiming truth to all of them. I do know it's done a fairly good job for me so far. So please feel free to push it and test it. Share your results with me if you'd like @ bndr.labs@gmail.com
