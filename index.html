@@ -113,13 +113,14 @@
           
           <div class="text-center mb-10 select-text-area">
             <h1 class="text-3xl md:text-4xl font-semibold tracking-tight mb-3">Unpack Local Payload</h1>
-            <p class="text-white/60 text-sm md:text-base leading-relaxed">Select a `.txt` payload. The engine forensically isolates code blocks, preserves folder paths, and generates a structured GitHub-ready `.zip` archive.</p>
+            <!-- UPDATED: broader description -->
+            <p class="text-white/60 text-sm md:text-base leading-relaxed">Select any text-based payload (.txt, .md, .js, .ts, .log, etc.). The engine forensically isolates code blocks, preserves folder paths, and generates a structured GitHub-ready `.zip` archive.</p>
           </div>
 
           <div id="view-input" class="flex flex-col gap-5">
             <input type="file" id="file-input" class="hidden" accept=".txt,.md,.log,.json,.js,.ts,.html,.css,.jsx,.tsx">
             
-            <!-- ===== ADDED: Drag-and-drop zone ===== -->
+            <!-- ADDED: drag-and-drop zone -->
             <div id="drop-zone" class="w-full border-2 border-dashed border-white/20 hover:border-accent rounded-2xl p-8 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer select-none touch-manipulation">
               <i data-lucide="upload-cloud" class="w-8 h-8 text-white/40 group-hover:text-accent transition-colors"></i>
               <span class="text-sm text-white/50 font-mono">Drag & Drop payload here</span>
@@ -185,7 +186,8 @@
           
           <div class="text-center mb-10 select-text-area">
             <h1 class="text-3xl md:text-4xl font-semibold tracking-tight mb-3">Fetch Remote Payload</h1>
-            <p class="text-white/60 text-sm md:text-base leading-relaxed">Provide a direct URL to a raw `.txt` payload (e.g. raw.githubusercontent.com). Stream and reconstruct the codebase entirely in-browser.</p>
+            <!-- UPDATED: broader description -->
+            <p class="text-white/60 text-sm md:text-base leading-relaxed">Provide a direct URL to any raw text payload (e.g., a code dump, log, markdown, or export on raw.githubusercontent.com). Stream and reconstruct the codebase entirely in-browser.</p>
           </div>
 
           <div id="remote-view-input" class="flex flex-col gap-6">
