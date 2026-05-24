@@ -683,7 +683,7 @@ function detectConfigFile(content) {
   const raw = content.trim();
   const text = raw.toLowerCase();
 
-  if ((text.includes('[build]') || text.includes('compatibility_date')) && text.includes('main =') && text.includes('name =')) return 'wrangler.toml';
+  if (text.includes('compatibility_date') && text.includes('main')) return 'wrangler.toml';
   if (text.includes('defineconfig') && text.includes('vitest/config')) return isTypeScript(content) ? 'vitest.config.ts' : 'vitest.config.js';
   if (text.includes('"compileroptions"') && text.includes('"target"')) return 'tsconfig.json';
   if (text.includes('"compileroptions"')) return 'jsconfig.json';
@@ -835,7 +835,7 @@ function forensicExtract(text) {
     while(buffer.length > 0 && buffer[0].trim() === '') buffer.shift();
     if (buffer.length > 0) {
       const realLines = buffer.filter(l => l.trim().length > 0).length;
-      if (currentType === 'EXPLICIT' || currentType === 'FENCE' || realLines >= MIN_CONTENT_LINES) {
+      if (currentType === 'EXPLICIT' || currentType === 'FENCE' || currentType === 'IMPLICIT' || realLines >= MIN_CONTENT_LINES) {
         files.push({ path: sanitizePath(currentFile), content: buffer.join('\n') });
       }
     }
