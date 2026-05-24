@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en" class="antialiased">
 <head>
@@ -34,6 +35,18 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
   <style>
+    :root {
+      --bg: #04040a;
+      --surface: rgba(255, 255, 255, 0.03);
+      --surface-hover: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #5e6ad2;
+      --accent-hover: #6f7ce6;
+      --error: #d25e5e;
+      --warning: #eab308;
+      --success: #22c55e;
+    }
+
     *, *::before, *::after { box-sizing: border-box; }
     html, body { width: 100%; height: 100dvh; background-color: var(--bg, #04040a); color: rgba(255,255,255,0.9); overflow: hidden; overscroll-behavior-y: none; }
     
@@ -87,6 +100,9 @@
         <button data-nav="remote" class="nav-btn group flex items-center gap-3 px-5 py-4 rounded-xl text-sm font-medium transition-all text-white/60 hover:bg-white/5 hover:text-white touch-manipulation">
           <i data-lucide="cloud" class="w-4 h-4 transition-transform group-hover:-translate-y-1"></i> Remote Payload
         </button>
+        <button data-nav="preview" class="nav-btn group flex items-center gap-3 px-5 py-4 rounded-xl text-sm font-medium transition-all text-white/60 hover:bg-white/5 hover:text-white touch-manipulation">
+          <i data-lucide="folder-tree" class="w-4 h-4 transition-transform group-hover:scale-110"></i> Preview
+        </button>
         <button data-nav="rules" class="nav-btn group flex items-center gap-3 px-5 py-4 rounded-xl text-sm font-medium transition-all text-white/60 hover:bg-white/5 hover:text-white touch-manipulation">
           <i data-lucide="shield" class="w-4 h-4 transition-transform group-hover:rotate-12"></i> Parser Rules
         </button>
@@ -121,7 +137,7 @@
             <input type="file" id="file-input" class="hidden" accept=".txt,.md,.log,.json,.js,.ts,.html,.css,.jsx,.tsx">
             
             <!-- ADDED: drag-and-drop zone -->
-            <div id="drop-zone" class="w-full border-2 border-dashed border-white/20 hover:border-accent rounded-2xl p-8 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer select-none touch-manipulation">
+            <div id="drop-zone" class="group w-full border-2 border-dashed border-white/20 hover:border-accent rounded-2xl p-8 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer select-none touch-manipulation">
               <i data-lucide="upload-cloud" class="w-8 h-8 text-white/40 group-hover:text-accent transition-colors"></i>
               <span class="text-sm text-white/50 font-mono">Drag & Drop payload here</span>
             </div>
@@ -210,6 +226,10 @@
             </div>
             <h3 class="text-xl font-medium mb-2 select-text-area">Streaming Data...</h3>
             <p id="remote-progress-sub" class="text-sm text-accent font-mono mb-8 h-5 overflow-hidden text-ellipsis whitespace-nowrap max-w-full px-4 select-text-area">Fetching remote payload...</p>
+
+            <div class="w-full h-3 bg-black/40 rounded-full overflow-hidden border border-white/5 shadow-inner">
+              <div id="remote-progress-bar" class="h-full bg-gradient-to-r from-accent to-accentHover w-0 transition-all duration-300 ease-out"></div>
+            </div>
           </div>
 
           <div id="remote-view-success" class="hidden flex-col items-center py-6 text-center">
@@ -317,11 +337,31 @@ function isBinaryContent(text) {
 
 function sanitizePath(p) {
   if (!p) return 'unnamed.txt';
-  // Remove traversal patterns but preserve internal double dots (e.g., config..json)
-  p = p.replace(/\.\.\//g, '').replace(/\.\.\\/g, '').replace(/^\.\.(?=[\/\\])/, '');
-  p = p.replace(/^[\/\\]+/, '').replace(/[<>:"|?*\\]/g, '_');
-  p = p.replace(/\/+/g, '/').trim();
-  return p || 'unnamed.txt';
+
+  p = String(p)
+    .trim()
+    .replace(/^file:\s*/i, '')
+    .replace(/^[`'"]+|[`'"]+$/g, '')
+    .replace(/^\.?[\/\\]+/, '');
+
+  // Normalize separators before removing illegal filename characters.
+  p = p.replace(/\\+/g, '/');
+
+  const safeParts = [];
+  for (const rawPart of p.split('/')) {
+    let part = rawPart.trim().replace(/^[`'"]+|[`'"]+$/g, '');
+    if (!part || part === '.' || part === '..') continue;
+    part = part.replace(/[<>:"|?*\x00-\x1F]/g, '_');
+    safeParts.push(part);
+  }
+
+  const safe = safeParts.join('/').replace(/\/+/g, '/').trim();
+  return safe || 'unnamed.txt';
+}
+
+function sanitizeDownloadName(name) {
+  const base = sanitizePath(name || 'repository').split('/').pop() || 'repository';
+  return base.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_') || 'repository';
 }
 
 // ============================================================================
@@ -378,7 +418,9 @@ const RemoteViewCtrl = {
   },
   updateProgress: (msg, ratio) => {
     const sub = document.getElementById('remote-progress-sub');
+    const bar = document.getElementById('remote-progress-bar');
     if (sub) sub.textContent = msg;
+    if (bar && ratio !== undefined) bar.style.width = `${ratio * 100}%`;
   },
   showError: (msg) => {
     const errEl = document.getElementById('remote-error-message');
@@ -457,7 +499,7 @@ const KNOWN_SOURCE_EXTS = [
   'toml', 'dockerfile', 'makefile', 'mod', 'sum', 'lock'
 ];
 
-const SPECIAL_FILENAMES = /^(Dockerfile|Makefile|Gemfile|Procfile|Rakefile|LICENSE|README|\.gitignore|\.env\.example|go\.mod|go\.sum|yarn\.lock)$/i;
+const SPECIAL_FILENAMES = /^(Dockerfile|Makefile|Gemfile|Procfile|Rakefile|LICENSE|README|README\.md|\.gitignore|\.gitattributes|\.dockerignore|\.env|\.env\.example|go\.mod|go\.sum|yarn\.lock|pnpm-lock\.yaml|package-lock\.json)$/i;
 
 function isValidPath(p) {
   if (!p || p.length === 0 || p.length > 255) return false;
@@ -471,66 +513,143 @@ function isValidPath(p) {
   return SPECIAL_FILENAMES.test(fileName) || KNOWN_SOURCE_EXTS.includes(ext);
 }
 
+function normalizeExtractedPath(raw) {
+  if (!raw) return '';
+  return sanitizePath(String(raw)
+    .trim()
+    .replace(/^[`'"]+|[`'"]+$/g, '')
+    .replace(/[;,]+$/g, '')
+    .replace(/^\.\//, ''));
+}
+
 // Advanced Multi-Format Path Extraction
 function extractPathInfo(line) {
   let trimmed = line.trim();
   // Remove trailing timestamp like " - Oct 1, 2023, 10:30 AM"
   trimmed = trimmed.replace(/\s+-\s+[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+[AP]M$/, '').trim();
 
-  // --- FILE: case-insensitive (fix #7)
-  if (trimmed.toUpperCase().startsWith('--- FILE:') && trimmed.includes('---', 9)) {
-    const path = trimmed.replace(/---\s*FILE:\s*/i, '').split('---')[0].trim();
+  // Fence line detection must run before markdown decoration cleanup;
+  // otherwise language tags like ```json can be mistaken for filenames.
+  if (trimmed.startsWith(FENCE) && trimmed !== FENCE && trimmed !== FENCE_EOF) {
+    const meta = trimmed.substring(FENCE.length).trim();
+    if (meta) {
+      const attrPath = meta.match(/(?:file|filename|path|title)=["']?([^"'\s]+)["']?/i);
+      if (attrPath) {
+        const path = normalizeExtractedPath(attrPath[1]);
+        if (isValidPath(path)) return { path, type: 'FENCE' };
+      }
+
+      if (meta.includes(':')) {
+        const parts = meta.split(':');
+        const path = normalizeExtractedPath(parts.pop());
+        if (isValidPath(path)) return { path, type: 'FENCE' };
+      }
+      if (meta.includes(' ')) {
+        const parts = meta.split(/\s+/);
+        const path = normalizeExtractedPath(parts.pop());
+        if (isValidPath(path)) return { path, type: 'FENCE' };
+      }
+
+      const path = normalizeExtractedPath(meta);
+      if (isValidPath(path)) return { path, type: 'FENCE' };
+    }
+    return null;
+  }
+
+  const deDecorated = trimmed
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)?/, '')
+    .replace(/^[#>\s]+/, '')
+    .replace(/^\*\*|\*\*$/g, '')
+    .trim();
+
+  // --- FILE: case-insensitive
+  if (deDecorated.toUpperCase().startsWith('--- FILE:') && deDecorated.includes('---', 9)) {
+    const path = normalizeExtractedPath(deDecorated.replace(/---\s*FILE:\s*/i, '').split('---')[0]);
     if (isValidPath(path)) return { path, type: 'EXPLICIT' };
+  }
+
+  // Markdown/list labels: "## File: `src/index.ts`", "- Path: package.json", etc.
+  const labelMatch = deDecorated.match(/^(?:File|Filename|Path|Title|Source|Target|Output|Create|Save as|Save-as)\s*[:\-]\s*[`'"]?([^`'"\s]+)[`'"]?\.?$/i);
+  if (labelMatch) {
+    const path = normalizeExtractedPath(labelMatch[1]);
+    if (isValidPath(path)) return { path, type: 'IMPLICIT' };
+  }
+
+  // Markdown headers with inline code path: "### `src/index.ts`"
+  const inlineHeaderPath = deDecorated.match(/^[`'"]?([a-zA-Z0-9_@./\-]+(?:\.[a-zA-Z0-9]+|\/(?:Dockerfile|Makefile|Procfile|README|LICENSE)))?[`'"]?$/);
+  if (inlineHeaderPath && inlineHeaderPath[1]) {
+    const path = normalizeExtractedPath(inlineHeaderPath[1]);
+    if (isValidPath(path)) return { path, type: 'IMPLICIT' };
   }
 
   // Fence line detection
   if (trimmed.startsWith(FENCE) && trimmed !== FENCE && trimmed !== FENCE_EOF) {
     const meta = trimmed.substring(FENCE.length).trim();
     if (meta) {
+      const attrPath = meta.match(/(?:file|filename|path|title)=["']?([^"'\s]+)["']?/i);
+      if (attrPath) {
+        const path = normalizeExtractedPath(attrPath[1]);
+        if (isValidPath(path)) return { path, type: 'FENCE' };
+      }
+
       if (meta.includes(':')) {
         const parts = meta.split(':');
-        const path = parts.pop().trim();
+        const path = normalizeExtractedPath(parts.pop());
         if (isValidPath(path)) return { path, type: 'FENCE' };
       }
       if (meta.includes(' ')) {
         const parts = meta.split(/\s+/);
-        const path = parts.pop().trim();
+        const path = normalizeExtractedPath(parts.pop());
         if (isValidPath(path)) return { path, type: 'FENCE' };
       }
-      if (isValidPath(meta)) return { path: meta, type: 'FENCE' };
+
+      const path = normalizeExtractedPath(meta);
+      if (isValidPath(path)) return { path, type: 'FENCE' };
     }
   }
 
-  const clean = trimmed.replace(/^[\*\`]+|[\*\`]+$/g, '').trim(); 
+  const clean = deDecorated.replace(/^[*`]+|[*`]+$/g, '').trim(); 
 
-  // Explicit "File: path" etc.
-  const explicitMatch = clean.match(/^(?:File|Filename|Path|Title):\s*([^\s]+\.[a-zA-Z0-9]+)$/i);
-  if (explicitMatch && isValidPath(explicitMatch[1])) return { path: explicitMatch[1], type: 'IMPLICIT' };
+  // Explicit "File: path" etc. with wrapped backticks/quotes.
+  const explicitMatch = clean.match(/^(?:File|Filename|Path|Title):\s*[`'"]?([^`'"\s]+)[`'"]?$/i);
+  if (explicitMatch) {
+    const path = normalizeExtractedPath(explicitMatch[1]);
+    if (isValidPath(path)) return { path, type: 'IMPLICIT' };
+  }
 
   // Comments with paths
-  const commentMatch = clean.match(/^(?:\/\*|\/\/|#|<!--)\s*([^\s]+\.[a-zA-Z0-9]+)\s*(?:\*\/|-->)?$/);
-  if (commentMatch && isValidPath(commentMatch[1])) return { path: commentMatch[1], type: 'IMPLICIT' };
+  const commentMatch = clean.match(/^(?:\/\*|\/\/|#|<!--)\s*[`'"]?([^`'"\s]+)[`'"]?\s*(?:\*\/|-->)?$/);
+  if (commentMatch) {
+    const path = normalizeExtractedPath(commentMatch[1]);
+    if (isValidPath(path)) return { path, type: 'IMPLICIT' };
+  }
 
   // Markdown headers with paths
-  const mdHeaderMatch = clean.match(/^#+\s+([^\s]+\.[a-zA-Z0-9]+)$/);
-  if (mdHeaderMatch && isValidPath(mdHeaderMatch[1])) return { path: mdHeaderMatch[1], type: 'IMPLICIT' };
+  const mdHeaderMatch = clean.match(/^#+\s+[`'"]?([^`'"\s]+)[`'"]?$/);
+  if (mdHeaderMatch) {
+    const path = normalizeExtractedPath(mdHeaderMatch[1]);
+    if (isValidPath(path)) return { path, type: 'IMPLICIT' };
+  }
 
-  // Prose line with filename after a colon (fix #6)
-  const proseMatch = clean.match(/^[^:]+:\s*([^\s]+\.[a-zA-Z0-9]+)$/);
+  // Prose line with filename after a colon
+  const proseMatch = clean.match(/^[^:]+:\s*[`'"]?([^`'"\s]+)[`'"]?$/);
   if (proseMatch) {
     const prefix = clean.substring(0, clean.indexOf(':')).toLowerCase();
     const codeKeywords = /^(const|let|var|import|export|function|class|if|for|while|return|switch|case|try|catch|throw|async|await|new|delete|typeof|instanceof)\b/;
     if (!codeKeywords.test(prefix) && !/[{}();=><]/.test(prefix)) {
-      const candidate = proseMatch[1].trim();
+      const candidate = normalizeExtractedPath(proseMatch[1]);
       if (isValidPath(candidate)) return { path: candidate, type: 'IMPLICIT' };
     }
   }
 
-  // Bare filename with known extension
-  if (/^[a-zA-Z0-9_\-\.\/@]+\.[a-zA-Z0-9]+$/.test(clean)) {
-    const ext = clean.split('.').pop().toLowerCase();
-    if (clean.includes('/') || KNOWN_SOURCE_EXTS.includes(ext)) {
-      return { path: clean, type: 'IMPLICIT' };
+  // Bare filename with known extension or special file name
+  if (/^[`'"]?[a-zA-Z0-9_\-\.\/@]+[`'"]?$/.test(clean)) {
+    const candidate = normalizeExtractedPath(clean);
+    const fileName = candidate.split('/').pop();
+    const hasDot = fileName.includes('.');
+    const ext = hasDot ? fileName.split('.').pop().toLowerCase() : '';
+    if (candidate.includes('/') || (hasDot && KNOWN_SOURCE_EXTS.includes(ext)) || SPECIAL_FILENAMES.test(fileName)) {
+      return { path: candidate, type: 'IMPLICIT' };
     }
   }
 
@@ -561,10 +680,14 @@ function isTypeScript(content) {
 // ------------------------------------------------------------------
 // Configuration file fingerprinting (fix #9) – now fully TypeScript aware
 function detectConfigFile(content) {
-  const text = content.toLowerCase();
+  const raw = content.trim();
+  const text = raw.toLowerCase();
+
+  if ((text.includes('[build]') || text.includes('compatibility_date')) && text.includes('main =') && text.includes('name =')) return 'wrangler.toml';
+  if (text.includes('defineconfig') && text.includes('vitest/config')) return isTypeScript(content) ? 'vitest.config.ts' : 'vitest.config.js';
   if (text.includes('"compileroptions"') && text.includes('"target"')) return 'tsconfig.json';
   if (text.includes('"compileroptions"')) return 'jsconfig.json';
-  if (text.includes('defineconfig') && (text.includes('vite') || text.includes('from "vite"') || text.includes("from 'vite'"))) {
+  if (text.includes('defineconfig') && (text.includes('from "vite"') || text.includes("from 'vite'") || text.includes('vite'))) {
     return isTypeScript(content) ? 'vite.config.ts' : 'vite.config.js';
   }
   if (text.includes('next.config') || (text.includes('module.exports') && text.includes('reactstrictmode'))) {
@@ -576,6 +699,16 @@ function detectConfigFile(content) {
   if (text.includes('datasource db {') || text.includes('generator client {')) {
     return 'prisma/schema.prisma';
   }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.compilerOptions) return 'tsconfig.json';
+      if (parsed.name && parsed.version && (parsed.scripts || parsed.dependencies || parsed.devDependencies || parsed.peerDependencies)) return 'package.json';
+      if (parsed.extends || parsed.rules || parsed.parserOptions || parsed.env) return '.eslintrc.json';
+    }
+  } catch(e) {}
+
   return null;
 }
 
@@ -597,7 +730,7 @@ function guessFilePath(content, index) {
 
   // 3. Core file types with fixed locations
   if (text.includes('<!doctype html>') || text.includes('<html')) return 'public/index.html';
-  if (text.includes('"name":') && text.includes('"version":') && text.includes('"dependencies":')) return 'package.json';
+  if (text.includes('"name":') && text.includes('"version":') && (text.includes('"dependencies":') || text.includes('"devdependencies":') || text.includes('"scripts":'))) return 'package.json';
   if (text.includes('getting started') || (firstLine.startsWith('# ') && lines.length < 30)) return 'README.md';
 
   // .gitignore heuristic
@@ -815,6 +948,10 @@ function forensicExtract(text) {
 }
 
 async function packagePayload(text, sourceName, viewCtrl) {
+  if (typeof JSZip === 'undefined') {
+    throw new Error('Dependency Fault: JSZip failed to load. Reconnect and reload the page before packaging.');
+  }
+
   viewCtrl.updateProgress('Executing Extraction Filter...', 0.3);
   await new Promise(r => setTimeout(r, 50)); 
 
@@ -836,7 +973,14 @@ async function packagePayload(text, sourceName, viewCtrl) {
     if (previewList) {
       const row = document.createElement('div');
       row.className = 'flex items-center gap-2 py-1.5 border-b border-white/5 last:border-0 hover:bg-white/5 px-2 rounded transition-colors';
-      row.innerHTML = `<i data-lucide="file-code" class="w-3 h-3 text-accent shrink-0"></i> <span class="truncate">${f.path}</span>`;
+      const icon = document.createElement('i');
+      icon.setAttribute('data-lucide', 'file-code');
+      icon.className = 'w-3 h-3 text-accent shrink-0';
+      const label = document.createElement('span');
+      label.className = 'truncate';
+      label.textContent = f.path;
+      row.appendChild(icon);
+      row.appendChild(label);
       previewList.appendChild(row);
     }
   });
@@ -844,7 +988,7 @@ async function packagePayload(text, sourceName, viewCtrl) {
   viewCtrl.updateProgress('Compressing Binary Archive...', 0.9);
   
   AppState.activeBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
-  AppState.activeFilename = `${sourceName}_extracted.zip`;
+  AppState.activeFilename = `${sanitizeDownloadName(sourceName)}_extracted.zip`;
 
   viewCtrl.showSuccess(extractedFiles.length);
   if (window.lucide) lucide.createIcons();
@@ -859,8 +1003,9 @@ async function processLocalFile(file) {
   LocalViewCtrl.updateProgress('Reading local payload...', 0.1);
   
   try {
+    if (file.size === 0) throw new Error('Parse Fault: selected file is empty.');
     const text = await file.text();
-    const sourceName = file.name.replace(/\.[^/.]+$/, "");
+    const sourceName = sanitizeDownloadName(file.name.replace(/\.[^/.]+$/, ""));
     await packagePayload(text, sourceName, LocalViewCtrl);
   } catch (err) {
     LocalViewCtrl.showError(err.message);
@@ -909,6 +1054,18 @@ const triggerDownload = () => {
   }
 };
 
+function resetPreviewList() {
+  const list = document.getElementById('preview-list');
+  if (list) list.innerHTML = '<div class="flex items-center justify-center h-full text-white/20 italic">No files currently isolated.</div>';
+}
+
+function resetProgressBars() {
+  const localBar = document.getElementById('progress-bar');
+  const remoteBar = document.getElementById('remote-progress-bar');
+  if (localBar) localBar.style.width = '0%';
+  if (remoteBar) remoteBar.style.width = '0%';
+}
+
 // ============================================================================
 // EVENT BINDINGS
 // ============================================================================
@@ -954,12 +1111,13 @@ window.addEventListener('load', () => {
     AppState.activeBlob = null; 
     if (fileInput) fileInput.value = ''; 
     LocalViewCtrl.setState('input'); 
-    const list = document.getElementById('preview-list');
-    if (list) list.innerHTML = '<div class="flex items-center justify-center h-full text-white/20 italic">No files currently isolated.</div>';
+    resetPreviewList();
+    resetProgressBars();
   });
   bindClick('btn-reset-error', () => { 
     AppState.activeBlob = null; 
     if (fileInput) fileInput.value = ''; 
+    resetProgressBars();
     LocalViewCtrl.setState('input'); 
   });
 
@@ -967,10 +1125,12 @@ window.addEventListener('load', () => {
   bindClick('btn-download-remote', triggerDownload);
   bindClick('btn-reset-remote', () => { 
     AppState.activeBlob = null; 
+    resetProgressBars();
     RemoteViewCtrl.setState('input'); 
   });
   bindClick('btn-reset-remote-error', () => { 
     AppState.activeBlob = null; 
+    resetProgressBars();
     RemoteViewCtrl.setState('input'); 
   });
 
